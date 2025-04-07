@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Traffic Violation System</title>
+  <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+  <header>
+    <h1>Live Traffic Violation Monitoring</h1>
+  </header>
+  <main>
+    <section class="live-feed">
+      <h2>Live Camera Feed</h2>
+      <img src="/video_feed" alt="Live Camera Feed" >
+    </section>
+    <section class="violations">
+      <h2>Recent Violations</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Violation Type</th>
+            <th>Confidence</th>
+            <th>Bounding Box</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for violation in violations %}
+          <tr>
+            <td>{{ violation[0] }}</td>
+            <td>{{ violation[1] }}</td>
+            <td>{{ violation[2] }}</td>
+            <td>{{ violation[3] }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="4">No violations logged yet.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </main>
+  <footer>
+    <p>&copy; 2025 Traffic Violation System</p>
+  </footer>
+</body>
+</html>

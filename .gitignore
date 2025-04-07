@@ -1,0 +1,109 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs-info/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.txt
+*.whl
+*.egg
+.env
+.venv
+env/
+venv/
+ENV/
+virtualenv/
+__pypackages__/
+*.manifest
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environments
+.env*
+!.env.example
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+*.pot
+*.pyc
+__pycache__/
+media/
+static/
+staticfiles/
+.sqlite3
+db.sqlite3
+local_settings.py
+/migrations
+
+# Flask stuff:
+instance/
+*.pyc
+__pycache__/
+.sqlite
+
+# FastAPI stuff:
+.env
+.venv
+env/
+venv/
+ENV/
+virtualenv/
+__pycache__/
+*.pyc
+*.sqlite
+instance/
+*.log
+
+# mypy cache
+.mypy_cache/
+
+# pytest cache
+.pytest_cache/
+
+# Coverage data
+.coverage
+coverage.xml
+htmlcov/
+.trunk/
+
+# Ruff cache
+.ruff_cache/
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# OS generated files #
+.DS_Store
+Thumbs.db

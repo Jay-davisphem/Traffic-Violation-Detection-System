@@ -1,0 +1,514 @@
+# config.py
+import os
+import logging
+
+class Config:
+    def __init__(self):
+        self.image_source = "data"
+        self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        self.violation_threshold = 0.5
+        self.image_dir = "violations"
+        self.db_path = "violations.db"
+        self.camera_index = 0
+        self.input_shape = (512, 512)
+        self.prompt = """
+            Detect traffic violations in the image.  Identify the type of violation,
+            and provide bounding box coordinates (x1, y1, x2, y2) for the violating vehicle.
+            Possible violation types are: "wrong_way", "clearway", "red_light", "speeding", "lane_change".
+            If no violation is detected, return "no_violation".
+            
+            Respond with a JSON object.  The JSON object should have the following structure:
+            
+            {
+                "violations": [
+                    {
+                        "type": "violation_type",
+                        "bbox": [x1, y1, x2, y2],
+                        "position_description": "very detailed description of where visually",
+                        "confidence": confidence_score
+                    },
+                    ... // more violations if any
+                ]
+            }
+            
+            Example 1:
+            {
+                "violations": [
+                    {
+                        "type": "red_light",
+                        "bbox": [100, 200, 300, 400],
+                        "position_description": "",
+                        "confidence": 0.95
+                    }
+                ]
+            }
+            
+            Example 2:
+            {
+                "violations": [
+                    {
+                        "type": "wrong_way",
+                        "bbox": [50, 100, 150, 200],
+                        "position_description": "",
+                        "confidence": 0.88
+                    },
+                    {
+                        "type": "speeding",
+                        "bbox": [250, 300, 350, 400],
+                        "position_description": "",
+                        "confidence": 0.75
+                    }
+                ]
+            }
+            
+            Example 3:
+            {
+                "violations": []
+            }
+            """
+            
+        logging.info(f"Config initialized with image_source: {self.image_source}")
+        
+        
+# database.py
+import sqlite3
+import threading
+import logging
+
+class ViolationDatabase:
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self._local = threading.local()
+        self.connect()
+        self.create_tables()
+
+    def _get_connection(self):
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            try:
+                self._local.conn = sqlite3.connect(self.db_path)
+                logging.info(f"Thread {threading.get_ident()}: Database connected.")
+            except sqlite3.Error as e:
+                logging.error(f"Thread {threading.get_ident()}: Error connecting to database: {e}")
+                raise
+        return self._local.conn
+
+    def _get_cursor(self):
+        if not hasattr(self._local, 'cursor') or self._local.cursor is None:
+            try:
+                conn = self._get_connection()
+                self._local.cursor = conn.cursor()
+            except sqlite3.Error as e:
+                logging.error(f"Thread {threading.get_ident()}: Error getting cursor: {e}")
+                raise
+        return self._local.cursor
+
+    def connect(self):
+        self._get_connection()
+
+    def create_tables(self):
+        try:
+            cursor = self._get_cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS violations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    image_path TEXT NOT NULL,
+                    image_hash TEXT NOT NULL,
+                    violation_type TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    bbox TEXT NOT NULL,
+                    position_description TEXT NOT NULL,
+                    latitude REAL,
+                    longitude REAL
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processed_images (
+                    image_hash TEXT PRIMARY KEY NOT NULL
+                )
+            """)
+            self._get_connection().commit()
+            logging.info(f"Thread {threading.get_ident()}: Violation and processed_images tables ensured.")
+        except sqlite3.Error as e:
+            logging.error(f"Thread {threading.get_ident()}: Error creating tables: {e}")
+            raise
+
+    def insert_violation(self, timestamp, image_path, image_hash, violation_type, confidence, bbox, position_description, latitude=None, longitude=None):
+        try:
+            cursor = self._get_cursor()
+            cursor.execute("""
+                INSERT INTO violations (timestamp, image_path, image_hash, violation_type, confidence, bbox, position_description, latitude, longitude)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (timestamp, image_path, image_hash, violation_type, confidence, bbox, position_description, latitude, longitude))
+            self._get_connection().commit()
+            logging.info(f"Thread {threading.get_ident()}: Violation inserted at {timestamp} with type {violation_type}.")
+        except sqlite3.Error as e:
+            logging.error(f"Thread {threading.get_ident()}: Error inserting violation: {e}")
+            raise
+
+    def check_image_hash(self, image_hash):
+        try:
+            cursor = self._get_cursor()
+            cursor.execute("SELECT 1 FROM processed_images WHERE image_hash = ?", (image_hash,))
+            return cursor.fetchone() is not None
+        except sqlite3.Error as e:
+            logging.error(f"Thread {threading.get_ident()}: Error checking image hash: {e}")
+            return False
+
+    def insert_image_hash(self, image_hash):
+        try:
+            cursor = self._get_cursor()
+            cursor.execute("INSERT INTO processed_images (image_hash) VALUES (?)", (image_hash,))
+            self._get_connection().commit()
+            logging.info(f"Thread {threading.get_ident()}: Image hash {image_hash} inserted into processed_images table.")
+        except sqlite3.Error as e:
+            logging.error(f"Thread {threading.get_ident()}: Error inserting image hash: {e}")
+            raise
+
+    def close(self):
+        if hasattr(self._local, 'conn') and self._local.conn is not None:
+            try:
+                self._local.conn.close()
+                logging.info(f"Thread {threading.get_ident()}: Database connection closed.")
+            except sqlite3.Error as e:
+                logging.error(f"Thread {threading.get_ident()}: Error closing database connection: {e}")
+            finally:
+                self._local.conn = None
+                self._local.cursor = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        
+        
+        
+# detector.py
+import cv2
+import numpy as np
+import os
+import json
+import google.generativeai as genai
+import logging
+import re
+
+class ViolationDetector:
+    def __init__(self, api_key, image_dir, input_shape, prompt):
+        self.api_key = api_key
+        self.image_dir = image_dir
+        self.input_shape = input_shape
+        genai.configure(api_key=self.api_key)
+        self.model = genai.GenerativeModel('gemini-2.5-pro-exp-03-25')
+        self.prompt = prompt
+        logging.info("ViolationDetector initialized.")
+
+    def preprocess_image(self, image):
+        try:
+            resized_image = cv2.resize(image, self.input_shape)
+            logging.debug("Image preprocessed successfully.")
+            return resized_image.astype(np.uint8)
+        except Exception as e:
+            logging.error(f"Error preprocessing image: {e}")
+            return None
+
+    def detect_violation(self, image):
+        preprocessed_image = self.preprocess_image(image)
+        if preprocessed_image is None:
+            return "Error", []
+        try:
+            _, encoded_image = cv2.imencode('.jpg', preprocessed_image)
+            image_bytes = encoded_image.tobytes()
+            image_data = {'mime_type': 'image/jpeg', 'data': image_bytes}
+            response = self.model.generate_content(
+                [self.prompt, image_data],
+                generation_config=genai.GenerationConfig()
+            )
+            if response.text is None:
+                logging.warning("Gemini API returned an empty response.")
+                return "Error", []
+            # Remove ```json and ``` from the response text
+            cleaned_response = re.sub(r'```json|```', '', response.text).strip()
+            try:
+                results = json.loads(cleaned_response)
+            except json.JSONDecodeError:
+                logging.error(f"Error decoding JSON response: {cleaned_response}")
+                return "Error", []
+            violations = results.get('violations', [])
+            logging.info(f"Detections received: {violations}")
+            if not violations:
+                return "no_violation", []
+            return "Violation", violations
+        except Exception as e:
+            logging.error(f"Error detecting violation: {e}")
+            return "Error", []
+
+    def save_violation_image(self, image, timestamp):
+        if not os.path.exists(self.image_dir):
+            os.makedirs(self.image_dir)
+        filename = f"{timestamp}.jpg"
+        image_path = os.path.join(self.image_dir, filename)
+        try:
+            cv2.imwrite(image_path, image)
+            logging.info(f"Violation image saved: {image_path}")
+            return image_path
+        except Exception as e:
+            logging.error(f"Error saving image: {e}")
+            return None
+
+# image_src.py
+import datetime
+import queue
+import os
+import cv2
+import logging
+from config import Config
+import threading
+import time
+import hashlib
+
+class ImageSource:
+    def __init__(self, config: Config):
+        self.source_type = config.image_source
+        self.camera_index = config.camera_index
+        self.config = config
+        self.read_images_thread = None
+        self.running = False
+        self.image_queue = None  # Will be set in start_capture
+        self.db = None
+        logging.info(f"ImageSource initialized with type: {self.source_type}")
+
+    def start_capture(self, image_queue, db):
+        """Start capturing images, either from camera or directory."""
+        self.image_queue = image_queue
+        self.running = True
+        self.db = db
+        logging.info("Capture started.")
+        if self.source_type == "camera":
+            self.capture = cv2.VideoCapture(self.camera_index)
+            if not self.capture.isOpened():
+                logging.error(f"Error: Unable to open camera with index {self.camera_index}")
+                self.running = False  # Stop if camera can't be opened
+                return
+            self.read_camera_frames()  # Start reading frames directly in this thread
+        elif self.source_type == "data":
+            # Start the thread to read images from the directory
+            self.read_images_thread = threading.Thread(target=self.read_images_from_directory)
+            self.read_images_thread.daemon = True
+            self.read_images_thread.start()
+        else:
+            logging.error("Invalid source type. Please check the config.")
+            self.running = False
+
+    def stop_capture(self):
+        """Stop image capture."""
+        logging.info("Capture stopped.")
+        self.running = False
+        if self.source_type == "camera":
+            if hasattr(self, 'capture') and self.capture is not None:  # Check if capture is defined
+                self.capture.release()
+        elif self.source_type == "data":
+            if self.read_images_thread is not None:
+                self.read_images_thread.join()  # Wait for thread to finish
+        self.image_queue = None
+        self.db = None
+
+    def read_camera_frames(self):
+        """Reads frames from the camera and puts them in the queue."""
+        while self.running:
+            ret, frame = self.capture.read()
+            if not ret or frame is None:
+                logging.warning("Failed to capture frame from camera.")
+                time.sleep(0.1)  # sleep to prevent high CPU usage
+                continue
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            try:
+                self.image_queue.put((frame, timestamp), block=True, timeout=1)
+            except queue.Full:
+                logging.warning("Queue is full. Skipping frame.")
+
+    def read_images_from_directory(self):
+        """Reads images from the directory, checks hash, and puts them in the queue."""
+        image_dir = self.config.image_source
+        image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        logging.info(f"Found {len(image_files)} image files in {image_dir}")
+        while self.running:
+            for image_file in image_files:
+                if not self.running:
+                    break
+                image_path = os.path.join(image_dir, image_file)
+                image_hash = self.calculate_image_hash(image_path)
+                if not self.db.check_image_hash(image_hash):
+                    logging.info(f"Reading image: {image_path}")
+                    frame = cv2.imread(image_path)
+                    if frame is None:
+                        logging.error(f"Failed to read image {image_path}")
+                        continue
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    try:
+                        self.image_queue.put((frame, timestamp, image_hash), block=True, timeout=1)
+                        logging.info(f"Image added to queue: {image_path}")
+                    except queue.Full:
+                        logging.warning("Queue is full. Skipping image.")
+                    time.sleep(0.1)  # Add a small delay to control reading speed
+                else:
+                    logging.info(f"Image already processed: {image_path}, hash: {image_hash}")
+                    continue # add continue here
+            time.sleep(60) #rescan every 5 seconds
+        logging.info("Finished reading images from directory.")
+
+    def calculate_image_hash(self, image_path):
+        """Calculate the MD5 hash of the image file."""
+        hasher = hashlib.md5()
+        try:
+            with open(image_path, 'rb') as image_file:
+                buf = image_file.read()
+                hasher.update(buf)
+            return hasher.hexdigest()
+        except Exception as e:
+            logging.error(f"Error calculating image hash for {image_path}: {e}")
+            return None
+
+    def read_frame(self):
+        """Reads a frame from the current source (camera or directory)."""
+        if self.source_type == 'camera':
+            ret, frame = self.capture.read()
+            if ret:
+                return frame, True
+            else:
+                return None, False
+        return None, False #shouldn't be called
+        
+        
+
+# logger.py
+
+import logging
+import os
+from datetime import datetime
+
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+
+log_file = os.path.join(log_dir, f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger("TrafficSystemLogger")
+
+
+# main.py
+import logging
+from config import Config
+from system import TrafficViolationSystem
+import queue
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    config = Config()
+    image_queue = queue.Queue(maxsize=1000)  # Create a queue
+    system = TrafficViolationSystem(config, image_queue)
+    system.start()
+    
+# models.py
+from pydantic import BaseModel
+
+class Violation(BaseModel):
+    type: str
+    bbox: list[int]
+    position_description: str
+    confidence: float
+
+class ViolationResponse(BaseModel):
+    violations: list[Violation]
+
+
+# system.py
+
+
+import time
+import datetime
+import threading
+import queue
+import logging
+from config import Config
+from database import ViolationDatabase
+from detector import ViolationDetector
+from image_src import ImageSource
+
+class TrafficViolationSystem:
+    def __init__(self, config: Config, image_queue: queue.Queue):
+        self.config = config
+        self.db = ViolationDatabase(config.db_path)
+        self.detector = ViolationDetector(config.gemini_api_key, config.image_dir, config.input_shape, config.prompt)
+        self.image_source = ImageSource(config)
+        self.running = False
+        self.image_queue = image_queue
+        self.process_thread = None
+        logging.basicConfig(level=logging.INFO)
+
+    def start(self):
+        if self.running:
+            return
+        self.running = True
+        self.image_source.start_capture(self.image_queue, self.db)  # Pass the queue and db to image source
+        self.process_thread = threading.Thread(target=self.process_images)
+        self.process_thread.daemon = True
+        self.process_thread.start()
+        logging.info("System started. Press Ctrl+C to stop.")
+        try:
+            while self.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logging.info("Stopping system...")
+            self.stop()
+        finally:
+            self.cleanup()
+
+    def stop(self):
+        self.running = False
+        if self.process_thread:
+            self.process_thread.join()
+        self.image_source.stop_capture()
+        self.db.close()
+
+    def cleanup(self):
+        self.image_source.stop_capture()
+        self.db.close()
+
+    def process_images(self):
+        while self.running:
+            try:
+                image, timestamp, image_hash = self.image_queue.get(timeout=1)
+                if image is None:
+                    continue
+                violation_type, violations = self.detector.detect_violation(image)
+                if "Violation" in violation_type:
+                    for violation in violations:
+                        bbox_str = ",".join(map(str, violation['bbox']))
+                        self.db.insert_violation(timestamp,
+                                                 self.detector.save_violation_image(image, timestamp),
+                                                 image_hash,  # Use the hash
+                                                 violation['type'],
+                                                 violation['confidence'],
+                                                 bbox_str,
+                                                 violation['position_description'],
+                                                 )
+                        logging.info(f"Violation logged: {violation['type']}, Confidence: {violation['confidence']}, BBox: {bbox_str}, Image: {timestamp}.jpg, Hash: {image_hash}")
+                elif violation_type == "Error":
+                    logging.error(f"Error processing image at {timestamp}")
+                self.db.insert_image_hash(image_hash) #add this
+                self.image_queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logging.error(f"Error processing image: {e}")
+                self.running = False
+                break
