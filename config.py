@@ -3,7 +3,7 @@ import logging
 
 class Config:
     def __init__(self):
-        self.image_source = "camera"
+        self.image_source = "data"
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
         self.violation_threshold = 0.5
         self.image_dir = "violations"
