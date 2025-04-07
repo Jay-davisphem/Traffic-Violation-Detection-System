@@ -9,7 +9,7 @@ class Config:
         self.image_dir = "violations"
         self.db_path = "violations.db"
         self.camera_index = 0
-        self.input_shape = (512, 512)
+        self.input_shape = (256, 256)
         self.prompt = """
             Detect traffic violations in the image.  Identify the type of violation,
             and provide bounding box coordinates (x1, y1, x2, y2) for the violating vehicle.

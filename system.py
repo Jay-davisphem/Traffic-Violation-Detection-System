@@ -21,12 +21,16 @@ class TrafficViolationSystem:
 
     def start(self):
         if self.running:
+            logging.info("System already running.")
             return
         self.running = True
-        self.image_source.start_capture(self.image_queue, self.db)  # Pass the queue and db to image source
+        logging.info("Image capture started affirmed")
+        self.image_source.start_capture(self.image_queue, self.db)
+        logging.info("Image capture started., was here")
         self.process_thread = threading.Thread(target=self.process_images)
         self.process_thread.daemon = True
         self.process_thread.start()
+        logging.info(f"Process thread started: {self.process_thread.is_alive()}") # Check if thread is alive 
         logging.info("System started. Press Ctrl+C to stop.")
         try:
             while self.running:
@@ -59,17 +63,17 @@ class TrafficViolationSystem:
                     for violation in violations:
                         bbox_str = ",".join(map(str, violation['bbox']))
                         self.db.insert_violation(timestamp,
-                                                 self.detector.save_violation_image(image, timestamp),
-                                                 image_hash,  # Use the hash
-                                                 violation['type'],
-                                                 violation['confidence'],
-                                                 bbox_str,
-                                                 violation['position_description'],
-                                                 )
+                                             self.detector.save_violation_image(image, timestamp),
+                                             image_hash,  # Use the hash
+                                             violation['type'],
+                                             violation['confidence'],
+                                             bbox_str,
+                                             violation['position_description'],
+                                             )
                         logging.info(f"Violation logged: {violation['type']}, Confidence: {violation['confidence']}, BBox: {bbox_str}, Image: {timestamp}.jpg, Hash: {image_hash}")
                 elif violation_type == "Error":
                     logging.error(f"Error processing image at {timestamp}")
-                self.db.insert_image_hash(image_hash) #add this
+
                 self.image_queue.task_done()
             except queue.Empty:
                 continue
@@ -77,3 +81,4 @@ class TrafficViolationSystem:
                 logging.error(f"Error processing image: {e}")
                 self.running = False
                 break
+        logging.info("Process images thread stopped.")
