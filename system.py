@@ -2,7 +2,7 @@ import time
 import datetime
 import threading
 import queue
-import logging
+from logger import logger
 from config import Config
 from database import ViolationDatabase
 from detector import ViolationDetector
@@ -17,26 +17,25 @@ class TrafficViolationSystem:
         self.running = False
         self.image_queue = image_queue
         self.process_thread = None
-        logging.basicConfig(level=logging.INFO)
 
     def start(self):
         if self.running:
-            logging.info("System already running.")
+            logger.info("System already running.")
             return
         self.running = True
-        logging.info("Image capture started affirmed")
+        logger.info("Image capture started affirmed")
         self.image_source.start_capture(self.image_queue, self.db)
-        logging.info("Image capture started., was here")
+        logger.info("Image capture started., was here")
         self.process_thread = threading.Thread(target=self.process_images)
         self.process_thread.daemon = True
         self.process_thread.start()
-        logging.info(f"Process thread started: {self.process_thread.is_alive()}") # Check if thread is alive 
-        logging.info("System started. Press Ctrl+C to stop.")
+        logger.info(f"Process thread started: {self.process_thread.is_alive()}") # Check if thread is alive 
+        logger.info("System started. Press Ctrl+C to stop.")
         try:
             while self.running:
                 time.sleep(1)
         except KeyboardInterrupt:
-            logging.info("Stopping system...")
+            logger.info("Stopping system...")
             self.stop()
         finally:
             self.cleanup()
@@ -70,15 +69,15 @@ class TrafficViolationSystem:
                                              bbox_str,
                                              violation['position_description'],
                                              )
-                        logging.info(f"Violation logged: {violation['type']}, Confidence: {violation['confidence']}, BBox: {bbox_str}, Image: {timestamp}.jpg, Hash: {image_hash}")
+                        logger.info(f"Violation logged: {violation['type']}, Confidence: {violation['confidence']}, BBox: {bbox_str}, Image: {timestamp}.jpg, Hash: {image_hash}")
                 elif violation_type == "Error":
-                    logging.error(f"Error processing image at {timestamp}")
+                    logger.error(f"Error processing image at {timestamp}")
 
                 self.image_queue.task_done()
             except queue.Empty:
                 continue
             except Exception as e:
-                logging.error(f"Error processing image: {e}")
+                logger.error(f"Error processing image: {e}")
                 self.running = False
                 break
-        logging.info("Process images thread stopped.")
+        logger.info("Process images thread stopped.")

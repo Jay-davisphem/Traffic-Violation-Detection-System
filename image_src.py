@@ -2,7 +2,7 @@ import datetime
 import queue
 import os
 import cv2
-import logging
+from logger import logger
 from config import Config
 import threading
 import time
@@ -21,18 +21,18 @@ class ImageSource:
         os.makedirs(self.data_dir, exist_ok=True) # Ensure directory exists 
         self.capture_interval = 30  # Capture interval in seconds 
         self.last_capture_time = 0  # Time of the last capture 
-        logging.info(f"ImageSource initialized with type: {self.source_type}")
+        logger.info(f"ImageSource initialized with type: {self.source_type}")
 
     def start_capture(self, image_queue, db):
         """Start capturing images, either from camera or directory."""
         self.image_queue = image_queue
         self.running = True
         self.db = db
-        logging.info("Capture started.")
+        logger.info("Capture started.")
         if self.source_type == "camera":
             self.capture = cv2.VideoCapture(self.camera_index)
             if not self.capture.isOpened():
-                logging.error(f"Error: Unable to open camera with index {self.camera_index}")
+                logger.error(f"Error: Unable to open camera with index {self.camera_index}")
                 self.running = False
                 return
             # Create a thread for read_camera_frames
@@ -44,13 +44,13 @@ class ImageSource:
             self.read_images_thread.daemon = True
             self.read_images_thread.start()
         else:
-            logging.error("Invalid source type. Please check the config.")
+            logger.error("Invalid source type. Please check the config.")
             self.running = False
 
     def stop_capture(self):
         """Stop image capture."""
 
-        logging.info("Capture stopped.")
+        logger.info("Capture stopped.")
         self.running = False
         if self.source_type == "camera":
             if hasattr(self, 'capture') and self.capture is not None:
@@ -68,7 +68,7 @@ class ImageSource:
             if current_time - self.last_capture_time >= self.capture_interval:
                 ret, frame = self.capture.read()
                 if not ret or frame is None:
-                    logging.warning("Failed to capture frame from camera.")
+                    logger.warning("Failed to capture frame from camera.")
                     time.sleep(0.1)
                     continue
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -79,13 +79,13 @@ class ImageSource:
                 if not self.db.check_image_hash(image_hash):  
                     try:
                         self.image_queue.put((frame, timestamp, image_hash), block=True, timeout=1) 
-                        logging.info(f"Image added to queue: {image_path}, hash: {image_hash}") 
+                        logger.info(f"Image added to queue: {image_path}, hash: {image_hash}") 
                     except queue.Full:
-                        logging.warning("Queue is full. Skipping frame.")
+                        logger.warning("Queue is full. Skipping frame.")
                     self.last_capture_time = current_time  
                     self.db.insert_image_hash(image_hash)  
                 else:
-                    logging.info(f"Image already processed, skipping: {image_path}, hash: {image_hash}") 
+                    logger.info(f"Image already processed, skipping: {image_path}, hash: {image_hash}") 
             else:
                 time.sleep(1)  
                 
@@ -94,7 +94,7 @@ class ImageSource:
 
         image_dir = self.config.image_source
         image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        logging.info(f"Found {len(image_files)} image files in {image_dir}")
+        logger.info(f"Found {len(image_files)} image files in {image_dir}")
         while self.running:
             for image_file in image_files:
                 if not self.running:
@@ -102,23 +102,24 @@ class ImageSource:
                 image_path = os.path.join(image_dir, image_file)
                 image_hash = self.calculate_image_hash(image_path)
                 if not self.db.check_image_hash(image_hash):
-                    logging.info(f"Reading image: {image_path}")
+                    logger.info(f"Reading image: {image_path}")
                     frame = cv2.imread(image_path)
                     if frame is None:
-                        logging.error(f"Failed to read image {image_path}")
+                        logger.error(f"Failed to read image {image_path}")
                         continue
                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                     try:
                         self.image_queue.put((frame, timestamp, image_hash), block=True, timeout=1)
-                        logging.info(f"Image added to queue: {image_path}")
+                        logger.info(f"Image added to queue: {image_path}")
                     except queue.Full:
-                        logging.warning("Queue is full. Skipping image.")
+                        logger.warning("Queue is full. Skipping image.")
+                    self.db.insert_image_hash(image_hash) 
                     time.sleep(0.1)
                 else:
-                    logging.info(f"Image already processed: {image_path}, hash: {image_hash}")
+                    logger.info(f"Image already processed: {image_path}, hash: {image_hash}")
                     continue
             time.sleep(60)
-        logging.info("Finished reading images from directory.")
+        logger.info("Finished reading images from directory.")
 
     def calculate_image_hash(self, image_path):
         """Calculate the MD5 hash of the image file."""
@@ -130,7 +131,7 @@ class ImageSource:
                 hasher.update(buf)
             return hasher.hexdigest()
         except Exception as e:
-            logging.error(f"Error calculating image hash for {image_path}: {e}")
+            logger.error(f"Error calculating image hash for {image_path}: {e}")
             return None
 
     def read_frame(self):

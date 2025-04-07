@@ -1,6 +1,6 @@
 import sqlite3
 import threading
-import logging
+from logger import logger
 
 class ViolationDatabase:
     def __init__(self, db_path):
@@ -13,9 +13,9 @@ class ViolationDatabase:
         if not hasattr(self._local, 'conn') or self._local.conn is None:
             try:
                 self._local.conn = sqlite3.connect(self.db_path)
-                logging.info(f"Thread {threading.get_ident()}: Database connected.")
+                logger.info(f"Thread {threading.get_ident()}: Database connected.")
             except sqlite3.Error as e:
-                logging.error(f"Thread {threading.get_ident()}: Error connecting to database: {e}")
+                logger.error(f"Thread {threading.get_ident()}: Error connecting to database: {e}")
                 raise
         return self._local.conn
 
@@ -25,7 +25,7 @@ class ViolationDatabase:
                 conn = self._get_connection()
                 self._local.cursor = conn.cursor()
             except sqlite3.Error as e:
-                logging.error(f"Thread {threading.get_ident()}: Error getting cursor: {e}")
+                logger.error(f"Thread {threading.get_ident()}: Error getting cursor: {e}")
                 raise
         return self._local.cursor
 
@@ -55,9 +55,9 @@ class ViolationDatabase:
                 )
             """)
             self._get_connection().commit()
-            logging.info(f"Thread {threading.get_ident()}: Violation and processed_images tables ensured.")
+            logger.info(f"Thread {threading.get_ident()}: Violation and processed_images tables ensured.")
         except sqlite3.Error as e:
-            logging.error(f"Thread {threading.get_ident()}: Error creating tables: {e}")
+            logger.error(f"Thread {threading.get_ident()}: Error creating tables: {e}")
             raise
 
     def insert_violation(self, timestamp, image_path, image_hash, violation_type, confidence, bbox, position_description, latitude=None, longitude=None):
@@ -68,9 +68,9 @@ class ViolationDatabase:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (timestamp, image_path, image_hash, violation_type, confidence, bbox, position_description, latitude, longitude))
             self._get_connection().commit()
-            logging.info(f"Thread {threading.get_ident()}: Violation inserted at {timestamp} with type {violation_type}.")
+            logger.info(f"Thread {threading.get_ident()}: Violation inserted at {timestamp} with type {violation_type}.")
         except sqlite3.Error as e:
-            logging.error(f"Thread {threading.get_ident()}: Error inserting violation: {e}")
+            logger.error(f"Thread {threading.get_ident()}: Error inserting violation: {e}")
             raise
 
     def check_image_hash(self, image_hash):
@@ -79,7 +79,7 @@ class ViolationDatabase:
             cursor.execute("SELECT 1 FROM processed_images WHERE image_hash = ?", (image_hash,))
             return cursor.fetchone() is not None
         except sqlite3.Error as e:
-            logging.error(f"Thread {threading.get_ident()}: Error checking image hash: {e}")
+            logger.error(f"Thread {threading.get_ident()}: Error checking image hash: {e}")
             return False
 
     def insert_image_hash(self, image_hash):
@@ -87,18 +87,18 @@ class ViolationDatabase:
             cursor = self._get_cursor()
             cursor.execute("INSERT INTO processed_images (image_hash) VALUES (?)", (image_hash,))
             self._get_connection().commit()
-            logging.info(f"Thread {threading.get_ident()}: Image hash {image_hash} inserted into processed_images table.")
+            logger.info(f"Thread {threading.get_ident()}: Image hash {image_hash} inserted into processed_images table.")
         except sqlite3.Error as e:
-            logging.error(f"Thread {threading.get_ident()}: Error inserting image hash: {e}")
+            logger.error(f"Thread {threading.get_ident()}: Error inserting image hash: {e}")
             raise
 
     def close(self):
         if hasattr(self._local, 'conn') and self._local.conn is not None:
             try:
                 self._local.conn.close()
-                logging.info(f"Thread {threading.get_ident()}: Database connection closed.")
+                logger.info(f"Thread {threading.get_ident()}: Database connection closed.")
             except sqlite3.Error as e:
-                logging.error(f"Thread {threading.get_ident()}: Error closing database connection: {e}")
+                logger.error(f"Thread {threading.get_ident()}: Error closing database connection: {e}")
             finally:
                 self._local.conn = None
                 self._local.cursor = None

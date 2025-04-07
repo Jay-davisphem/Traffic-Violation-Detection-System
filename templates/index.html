@@ -1,49 +1,132 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Traffic Violation System</title>
-  <link rel="stylesheet" href="/static/css/styles.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Traffic Violation System</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .container {
+            width: 90%;
+            max-width: 1200px;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        h1, h2 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 20px auto;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            overflow: hidden;
+
+        }
+
+        th, td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+
+        th {
+            background-color: #007bff;
+            color: white;
+            font-weight: 600;
+        }
+
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        tr:hover {
+            background-color: #f0f0f0;
+        }
+
+        td img {
+            max-width: 150px;
+            border-radius: 4px;
+            margin: 0;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                width: 95%;
+                padding: 15px;
+            }
+
+            th, td {
+                padding: 8px 10px;
+                font-size: 0.9em;
+            }
+
+            td img {
+                max-width: 100px;
+            }
+        }
+    </style>
 </head>
 <body>
-  <header>
-    <h1>Live Traffic Violation Monitoring</h1>
-  </header>
-  <main>
-    <section class="live-feed">
-      <h2>Live Camera Feed</h2>
-      <img src="/video_feed" alt="Live Camera Feed" >
-    </section>
-    <section class="violations">
-      <h2>Recent Violations</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Timestamp</th>
-            <th>Violation Type</th>
-            <th>Confidence</th>
-            <th>Bounding Box</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for violation in violations %}
-          <tr>
-            <td>{{ violation[0] }}</td>
-            <td>{{ violation[1] }}</td>
-            <td>{{ violation[2] }}</td>
-            <td>{{ violation[3] }}</td>
-          </tr>
-          {% else %}
-          <tr>
-            <td colspan="4">No violations logged yet.</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </section>
-  </main>
-  <footer>
-    <p>&copy; 2025 Traffic Violation System</p>
-  </footer>
+    <div class="container">
+        <h1>Traffic Violation System</h1>
+
+        {% if latest_camera_frame_path %}
+            <h2>Live Camera Feed Being processed</h2>
+            <img src="/latest_camera_frame" alt="Latest Camera Frame">
+        {% endif %}
+
+        <h2>Violation Details</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Image</th>
+                    <th>Violation Type</th>
+                    <th>Confidence</th>
+                    <th>Position</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for violation in violations %}
+                <tr>
+                    <td>{{ violation[1] }}</td>
+                    <td><img src="/violations/{{ violation[1] }}.jpg" alt="Violation Image" width="200"></td>
+                    <td>{{ violation[4] }}</td>
+                    <td>{{ violation[5] }}</td>
+                    <td>{{ violation[6] }}</td>
+                    <td>{{violation[7] }} </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </body>
 </html>

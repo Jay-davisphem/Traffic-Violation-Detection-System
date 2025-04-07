@@ -1,9 +1,9 @@
 import os
-import logging
+from logger import logger
 
 class Config:
     def __init__(self):
-        self.image_source = "data"
+        self.image_source = "camera"
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
         self.violation_threshold = 0.5
         self.image_dir = "violations"
@@ -66,4 +66,4 @@ class Config:
             }
             """
             
-        logging.info(f"Config initialized with image_source: {self.image_source}")
+        logger.info(f"Config initialized with image_source: {self.image_source}")
