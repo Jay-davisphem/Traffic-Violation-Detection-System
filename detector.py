@@ -7,12 +7,12 @@ from logger import logger
 import re
 
 class ViolationDetector:
-    def __init__(self, api_key, image_dir, input_shape, prompt):
+    def __init__(self, api_key, image_dir, input_shape, prompt, model):
         self.api_key = api_key
         self.image_dir = image_dir
         self.input_shape = input_shape
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel('gemini-2.0-flash') # final descision is gemini-2.5-pro-exp-03-25
+        self.model = genai.GenerativeModel(model) # final descision is gemini-2.5-pro-exp-03-25
         self.prompt = prompt
         logger.info("ViolationDetector initialized.")
 

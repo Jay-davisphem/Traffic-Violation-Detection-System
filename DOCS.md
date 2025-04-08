@@ -115,27 +115,28 @@ To address this, I implemented thread-local database connections. Here's how it 
 
 ### **3.3 Code Example (database.py):**
 
-import sqlite3 \
-import threading \
-from logger import logger \
- \
-class ViolationDatabase: \
-    def __init__(self, db_path): \
-        self.db_path = db_path \
-        self._local = threading.local()  # Thread-local storage \
-        self.connect() \
-        self.create_tables() \
- \
-    def _get_connection(self): \
-        if not hasattr(self._local, 'conn') or self._local.conn is None: \
-            try: \
-                self._local.conn = sqlite3.connect(self.db_path) \
-                logger.info(f"Thread {threading.get_ident()}: Database connected.") \
-            except sqlite3.Error as e: \
-                logger.error(f"Thread {threading.get_ident()}: Error connecting to database: {e}") \
-                raise \
-        return self._local.conn \
- \
+```python
+import sqlite3
+import threading
+from logger import logger
+
+class ViolationDatabase:
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self._local = threading.local()  # Thread-local storage 
+        self.connect()
+        self.create_tables()
+
+    def _get_connection(self):
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            try:
+                self._local.conn = sqlite3.connect(self.db_path)
+                logger.info(f"Thread {threading.get_ident()}: Database connected.")
+            except sqlite3.Error as e:
+                logger.error(f"Thread {threading.get_ident()}: Error connecting to database: {e}")
+                raise
+        return self._local.conn
+```
     # Similar changes in _get_cursor(), connect(), and close() \
 
 
