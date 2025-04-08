@@ -7,6 +7,7 @@ body {
   justify-content: center;
   align-items: center;
   min-height: 100vh;
+  flex-direction: column;
 }
 
 .container {
@@ -16,6 +17,7 @@ body {
   padding: 20px;
   border-radius: 8px;
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  margin: 10px;
 }
 
 h1, h2 {
@@ -40,7 +42,6 @@ table {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
   border-radius: 8px;
   overflow: hidden;
-
 }
 
 th, td {
@@ -75,6 +76,11 @@ td img {
       padding: 15px;
   }
 
+  h1, h2 {
+      font-size: 1.2em;
+      margin-bottom: 15px;
+  }
+
   th, td {
       padding: 8px 10px;
       font-size: 0.9em;
@@ -82,5 +88,34 @@ td img {
 
   td img {
       max-width: 100px;
+  }
+
+  table {
+    font-size: 0.85em;
+  }
+
+  /* Adjust live camera feed image size for mobile screens */
+  img[alt="Latest Camera Frame"] {
+      max-width: 100%;
+      height: auto;
+      margin: 10px 0;
+  }
+}
+
+@media (max-width: 480px) {
+  h1 {
+      font-size: 1.1em;
+  }
+
+  table {
+    font-size: 0.8em;
+  }
+
+  td img {
+    max-width: 80px;
+  }
+
+  th, td {
+      padding: 6px 8px;
   }
 }
