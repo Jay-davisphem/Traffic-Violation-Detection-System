@@ -31,7 +31,7 @@
         {% for violation in violations %}
         <tr>
           <td>{{ violation[1] }}</td>
-          <td><img src="/violations/{{ violation[1] }}.jpg" alt="Violation Image" width="200"></td>
+          <td><img src="/violations/{{ violation[1] }}.jpg" alt="Violation Image"></td>
           <td>{{ violation[4] }}</td>
           <td>{{ violation[5] }}</td>
           <td>{{ violation[6] }}</td>
@@ -43,20 +43,18 @@
   </div>
 
   <script>
-    // Function to update the violation table and the camera feed
     function updateData() {
       fetch('/api/violations')
         .then(response => response.json())
         .then(data => {
           const tbody = document.getElementById('violation-body');
-          tbody.innerHTML = ''; // Clear current table content
+          tbody.innerHTML = '';
 
-          // Build new table rows for each violation record received
           data.forEach(violation => {
             const row = document.createElement('tr');
             row.innerHTML = `
               <td>${violation[1]}</td>
-              <td><img src="/violations/${violation[1]}.jpg" alt="Violation Image" width="200"></td>
+              <td><img src="/violations/${violation[1]}.jpg" alt="Violation Image"></td>
               <td>${violation[4]}</td>
               <td>${violation[5]}</td>
               <td>${violation[6]}</td>
@@ -67,14 +65,12 @@
         })
         .catch(error => console.error('Error updating violations:', error));
 
-      // Update the live camera image (cache-busting by appending a timestamp)
       const cameraImg = document.querySelector('img[alt="Latest Camera Frame"]');
       if (cameraImg) {
         cameraImg.src = '/latest_camera_frame?time=' + new Date().getTime();
       }
     }
 
-    // Poll the backend every 5000ms (5 seconds)
     setInterval(updateData, 5000);
   </script>
 </body>
