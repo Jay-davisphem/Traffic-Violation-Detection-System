@@ -57,8 +57,6 @@ dist/
 *.pyc
 __pycache__/
 media/
-static/
-staticfiles/
 .sqlite3
 db.sqlite3
 local_settings.py
