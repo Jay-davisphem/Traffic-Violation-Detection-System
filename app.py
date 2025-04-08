@@ -1,6 +1,6 @@
 from logger import logger
 import os
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, Response
@@ -61,7 +61,20 @@ async def index(request: Request):
     latest_camera_frame_path = get_latest_camera_frame_path()
     return templates.TemplateResponse("index.html", {"request": request, "violations": violations, "latest_camera_frame_path": latest_camera_frame_path})
 
-
+@app.get('/api/violations')
+def get_violations():
+    conn = get_db_connection()
+    violations = []
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM violations")
+            violations = cursor.fetchall()
+        finally:
+            conn.close()
+    else:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    return violations
 @app.get("/latest_camera_frame")
 async def get_camera_frame():
     latest_camera_frame_path = get_latest_camera_frame_path()

@@ -5,6 +5,16 @@ import json
 import google.generativeai as genai
 from logger import logger
 import re
+import smtplib 
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+import os
+
+GMAIL_APP_PASS = os.environ.get('GMAIL_APP_PASS')
+GMAIL_USER = os.environ.get('GMAIL_USER', 'davidoluwafemi178@gmail.com')
+GMAIL_R_USER = os.environ.get('GMAIL_USER', 'davidoluwafemi178@gmail.com')
 
 class ViolationDetector:
     def __init__(self, api_key, image_dir, input_shape, prompt, model):
@@ -14,6 +24,9 @@ class ViolationDetector:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(model) # final descision is gemini-2.5-pro-exp-03-25
         self.prompt = prompt
+        self.sender_email = GMAIL_USER
+        self.sender_password = GMAIL_APP_PASS 
+        self.recipient_email = GMAIL_R_USER
         logger.info("ViolationDetector initialized.")
 
     def preprocess_image(self, image):
@@ -68,3 +81,59 @@ class ViolationDetector:
         except Exception as e:
             logger.error(f"Error saving image: {e}")
             return None
+
+    def send_violation_alert(self, recipient_email, violation_details, image_path):
+        """Sends an email alert for a detected traffic violation."""
+        subject = "Traffic Violation Alert"
+        msg = MIMEMultipart()
+        msg['From'] = self.sender_email
+        msg['To'] = recipient_email
+        msg['Subject'] = subject
+        text = f"A traffic violation has been detected:\n\n{violation_details}"
+        msg.attach(MIMEText(text, 'plain'))
+
+        # Attach the image
+        try:
+            with open(image_path, 'rb') as img_file:
+                img_data = img_file.read()
+                image = MIMEBase('image', 'jpg')
+                image.set_payload(img_data)
+                encoders.encode_base64(image)
+                image.add_header('Content-Disposition', f'attachment; filename="{os.path.basename(image_path)}"')
+                msg.attach(image)
+        except Exception as e:
+            print(f"Error attaching image: {e}")
+            logger.error(f"Error attaching image: {e}")
+
+        try:
+            server = smtplib.SMTP_SSL("smtp.gmail.com", 465)  # Use Gmail's SMTP server
+            server.login(self.sender_email, self.sender_password)
+            server.sendmail(self.sender_email, recipient_email, msg.as_string())
+            server.quit()
+            print(f"Email sent to {recipient_email}")
+            logger.info(f"Email sent to {recipient_email}")
+        except Exception as e:
+            print(f"Error sending email: {e}")
+            logger.error(f"Error sending email: {e}")
+
+    def detect_and_notify(self, image, timestamp, image_hash):
+        """Detects violations and sends email if any are found."""
+        violation_type, violations = self.detect_violation(image)
+        if "Violation" in violation_type:
+            for violation in violations:
+                bbox_str = ",".join(map(str, violation['bbox']))
+                image_path = self.save_violation_image(image, timestamp)
+                logger.info(
+                    f"Violation logged: {violation['type']}, Confidence: {violation['confidence']}, BBox: {bbox_str}, Image: {timestamp}.jpg, Hash: {image_hash}")
+                # Send email alert
+                violation_details = (
+                    f"Type: {violation['type']}\n"
+                    f"Location: {violation['position_description']}\n"
+                    f"Time: {timestamp}\n"
+                    f"Confidence: {violation['confidence']}\n"
+                    f"Bounding Box: {bbox_str}"
+                )
+                self.send_violation_alert(self.recipient_email, violation_details, image_path)
+        elif violation_type == "Error":
+            logger.error(f"Error processing image at {timestamp}")
+        return violation_type, violations 

@@ -1,5 +1,4 @@
 import time
-import datetime
 import threading
 import queue
 from logger import logger
@@ -9,7 +8,7 @@ from detector import ViolationDetector
 from image_src import ImageSource
 import os
 
-GEMINI_API_MODEL = os.environ.get('GEMINI_API_MODEL', 'gemini-2.0-flash')
+GEMINI_API_MODEL = os.environ.get('GEMINI_API_MODEL', 'gemini-2.0-flash') or 'gemini-2.0-flash'
 class TrafficViolationSystem:
     def __init__(self, config: Config, image_queue: queue.Queue):
         self.config = config
@@ -59,13 +58,13 @@ class TrafficViolationSystem:
                 image, timestamp, image_hash = self.image_queue.get(timeout=1)
                 if image is None:
                     continue
-                violation_type, violations = self.detector.detect_violation(image)
+                violation_type, violations = self.detector.detect_and_notify(image, timestamp, image_hash) # detect_and_notify by email
                 if "Violation" in violation_type:
                     for violation in violations:
                         bbox_str = ",".join(map(str, violation['bbox']))
                         self.db.insert_violation(timestamp,
                                              self.detector.save_violation_image(image, timestamp),
-                                             image_hash,  # Use the hash
+                                             image_hash,
                                              violation['type'],
                                              violation['confidence'],
                                              bbox_str,

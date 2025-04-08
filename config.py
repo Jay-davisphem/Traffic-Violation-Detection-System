@@ -19,6 +19,7 @@ class Config:
             3. Return bounding box coordinates for each violating vehicle in the format [x1, y1, x2, y2].
             4. Include a **very detailed visual description** of where each violating vehicle is located within the image.
             5. Provide a confidence score (0.0 to 1.0) for each violation.
+            6. See if you extract details of tracking the drivers, put is as metadata object
 
             Possible traffic violation types include (but are not limited to):
             - "red_light": Vehicle crossing an intersection while the traffic light is red.
@@ -32,7 +33,7 @@ class Config:
             - "illegal_turn": Vehicle making a prohibited U-turn or turning where it’s not allowed.
             - "lane_straddling": Vehicle positioned across multiple lanes improperly.
             - "bus_lane_violation": Unauthorized vehicle driving in a bus-only lane.
-
+            - and other ones
             If **no violation** is detected, return `"violations": []`.
 
             Respond strictly in a valid JSON format as shown below:
@@ -43,7 +44,8 @@ class Config:
                         "type": "violation_type",
                         "bbox": [x1, y1, x2, y2],
                         "position_description": "very detailed description of where the vehicle is located in the image",
-                        "confidence": float (e.g., 0.92)
+                        "confidence": float (e.g., 0.92),
+                        "metadata": {}
                     },
                     ...
                 ]
@@ -56,7 +58,8 @@ class Config:
                         "type": "red_light",
                         "bbox": [100, 200, 300, 400],
                         "position_description": "The red car is in the middle of the intersection, clearly beyond the white stop line under an active red light",
-                        "confidence": 0.95
+                        "confidence": 0.95,
+                        "metadata": {}
                     }
                 ]
             }
@@ -68,13 +71,15 @@ class Config:
                         "type": "wrong_way",
                         "bbox": [50, 100, 150, 200],
                         "position_description": "A black SUV is traveling in the wrong direction on a one-way street marked by white arrows pointing the opposite way",
-                        "confidence": 0.88
+                        "confidence": 0.88,
+                        "metadata": {},
                     },
                     {
                         "type": "speeding",
                         "bbox": [250, 300, 350, 400],
                         "position_description": "A silver sedan in the left lane appears blurred and ahead of other vehicles, suggesting high speed in a clearly marked 40 km/h zone",
-                        "confidence": 0.78
+                        "confidence": 0.78,
+                        "metadata": {},
                     }
                 ]
             }

@@ -1,132 +1,81 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Traffic Violation System</title>
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f4f4f4;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-        }
-
-        .container {
-            width: 90%;
-            max-width: 1200px;
-            background-color: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-        }
-
-        h1, h2 {
-            color: #333;
-            text-align: center;
-            margin-bottom: 20px;
-        }
-
-        img {
-            max-width: 100%;
-            height: auto;
-            display: block;
-            margin: 20px auto;
-            border-radius: 4px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            border-radius: 8px;
-            overflow: hidden;
-
-        }
-
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
-        }
-
-        th {
-            background-color: #007bff;
-            color: white;
-            font-weight: 600;
-        }
-
-        tr:nth-child(even) {
-            background-color: #f9f9f9;
-        }
-
-        tr:hover {
-            background-color: #f0f0f0;
-        }
-
-        td img {
-            max-width: 150px;
-            border-radius: 4px;
-            margin: 0;
-        }
-
-        @media (max-width: 768px) {
-            .container {
-                width: 95%;
-                padding: 15px;
-            }
-
-            th, td {
-                padding: 8px 10px;
-                font-size: 0.9em;
-            }
-
-            td img {
-                max-width: 100px;
-            }
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Traffic Violation System</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}">
 </head>
 <body>
-    <div class="container">
-        <h1>Traffic Violation System</h1>
+  <div class="container">
+    <h1>Traffic Violation System</h1>
 
-        {% if latest_camera_frame_path %}
-            <h2>Live Camera Feed Being processed</h2>
-            <img src="/latest_camera_frame" alt="Latest Camera Frame">
-        {% endif %}
+    {% if latest_camera_frame_path %}
+      <h2>Live Camera Feed Being Processed</h2>
+      <img src="/latest_camera_frame" alt="Latest Camera Frame">
+    {% endif %}
 
-        <h2>Violation Details</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Timestamp</th>
-                    <th>Image</th>
-                    <th>Violation Type</th>
-                    <th>Confidence</th>
-                    <th>Position</th>
-                    <th>Description</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for violation in violations %}
-                <tr>
-                    <td>{{ violation[1] }}</td>
-                    <td><img src="/violations/{{ violation[1] }}.jpg" alt="Violation Image" width="200"></td>
-                    <td>{{ violation[4] }}</td>
-                    <td>{{ violation[5] }}</td>
-                    <td>{{ violation[6] }}</td>
-                    <td>{{violation[7] }} </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+    <h2>Violation Details</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Image</th>
+          <th>Violation Type</th>
+          <th>Confidence</th>
+          <th>Position</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody id="violation-body">
+        {% for violation in violations %}
+        <tr>
+          <td>{{ violation[1] }}</td>
+          <td><img src="/violations/{{ violation[1] }}.jpg" alt="Violation Image" width="200"></td>
+          <td>{{ violation[4] }}</td>
+          <td>{{ violation[5] }}</td>
+          <td>{{ violation[6] }}</td>
+          <td>{{ violation[7] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    // Function to update the violation table and the camera feed
+    function updateData() {
+      fetch('/api/violations')
+        .then(response => response.json())
+        .then(data => {
+          const tbody = document.getElementById('violation-body');
+          tbody.innerHTML = ''; // Clear current table content
+
+          // Build new table rows for each violation record received
+          data.forEach(violation => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+              <td>${violation[1]}</td>
+              <td><img src="/violations/${violation[1]}.jpg" alt="Violation Image" width="200"></td>
+              <td>${violation[4]}</td>
+              <td>${violation[5]}</td>
+              <td>${violation[6]}</td>
+              <td>${violation[7]}</td>
+            `;
+            tbody.appendChild(row);
+          });
+        })
+        .catch(error => console.error('Error updating violations:', error));
+
+      // Update the live camera image (cache-busting by appending a timestamp)
+      const cameraImg = document.querySelector('img[alt="Latest Camera Frame"]');
+      if (cameraImg) {
+        cameraImg.src = '/latest_camera_frame?time=' + new Date().getTime();
+      }
+    }
+
+    // Poll the backend every 5000ms (5 seconds)
+    setInterval(updateData, 5000);
+  </script>
 </body>
 </html>

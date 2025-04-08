@@ -107,3 +107,9 @@ htmlcov/
 # OS generated files #
 .DS_Store
 Thumbs.db
+
+/camera_data/*
+/data/*
+/violations/*
+/captured/*
+/processed/*
