@@ -1,0 +1,1165 @@
+# file database.py
+import sqlite3
+import threading
+from logger import logger
+
+class ViolationDatabase:
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self._local = threading.local()
+        self.connect()
+        self.create_tables()
+
+    def _get_connection(self):
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            try:
+                self._local.conn = sqlite3.connect(self.db_path)
+                logger.info(f"Thread {threading.get_ident()}: Database connected.")
+            except sqlite3.Error as e:
+                logger.error(f"Thread {threading.get_ident()}: Error connecting to database: {e}")
+                raise
+        return self._local.conn
+
+    def _get_cursor(self):
+        if not hasattr(self._local, 'cursor') or self._local.cursor is None:
+            try:
+                conn = self._get_connection()
+                self._local.cursor = conn.cursor()
+            except sqlite3.Error as e:
+                logger.error(f"Thread {threading.get_ident()}: Error getting cursor: {e}")
+                raise
+        return self._local.cursor
+
+    def connect(self):
+        self._get_connection()
+
+    def create_tables(self):
+        try:
+            cursor = self._get_cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS violations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    image_path TEXT NOT NULL,
+                    image_hash TEXT NOT NULL,
+                    violation_type TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    bbox TEXT NOT NULL,
+                    position_description TEXT NOT NULL,
+                    latitude REAL,
+                    longitude REAL
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processed_images (
+                    image_hash TEXT PRIMARY KEY NOT NULL
+                )
+            """)
+            self._get_connection().commit()
+            logger.info(f"Thread {threading.get_ident()}: Violation and processed_images tables ensured.")
+        except sqlite3.Error as e:
+            logger.error(f"Thread {threading.get_ident()}: Error creating tables: {e}")
+            raise
+
+    def insert_violation(self, timestamp, image_path, image_hash, violation_type, confidence, bbox, position_description, latitude=None, longitude=None):
+        try:
+            cursor = self._get_cursor()
+            cursor.execute("""
+                INSERT INTO violations (timestamp, image_path, image_hash, violation_type, confidence, bbox, position_description, latitude, longitude)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (timestamp, image_path, image_hash, violation_type, confidence, bbox, position_description, latitude, longitude))
+            self._get_connection().commit()
+            logger.info(f"Thread {threading.get_ident()}: Violation inserted at {timestamp} with type {violation_type}.")
+        except sqlite3.Error as e:
+            logger.error(f"Thread {threading.get_ident()}: Error inserting violation: {e}")
+            raise
+
+    def check_image_hash(self, image_hash):
+        try:
+            cursor = self._get_cursor()
+            cursor.execute("SELECT 1 FROM processed_images WHERE image_hash = ?", (image_hash,))
+            return cursor.fetchone() is not None
+        except sqlite3.Error as e:
+            logger.error(f"Thread {threading.get_ident()}: Error checking image hash: {e}")
+            return False
+
+    def insert_image_hash(self, image_hash):
+        try:
+            cursor = self._get_cursor()
+            cursor.execute("INSERT INTO processed_images (image_hash) VALUES (?)", (image_hash,))
+            self._get_connection().commit()
+            logger.info(f"Thread {threading.get_ident()}: Image hash {image_hash} inserted into processed_images table.")
+        except sqlite3.Error as e:
+            logger.error(f"Thread {threading.get_ident()}: Error inserting image hash: {e}")
+            raise
+
+    def close(self):
+        if hasattr(self._local, 'conn') and self._local.conn is not None:
+            try:
+                self._local.conn.close()
+                logger.info(f"Thread {threading.get_ident()}: Database connection closed.")
+            except sqlite3.Error as e:
+                logger.error(f"Thread {threading.get_ident()}: Error closing database connection: {e}")
+            finally:
+                self._local.conn = None
+                self._local.cursor = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+# file image_src.py
+import datetime
+import queue
+import os
+import cv2
+from logger import logger
+from config import Config
+import threading
+import time
+import hashlib
+
+class ImageSource:
+    def __init__(self, config: Config):
+        self.source_type = config.image_source
+        self.camera_index = config.camera_index
+        self.config = config
+        self.read_images_thread = None
+        self.running = False
+        self.image_queue = None  # Will be set in start_capture
+        self.db = None
+        self.data_dir = "camera_data"  # Directory to save camera frames 
+        os.makedirs(self.data_dir, exist_ok=True) # Ensure directory exists 
+        self.capture_interval = 30  # Capture interval in seconds 
+        self.last_capture_time = 0  # Time of the last capture 
+        logger.info(f"ImageSource initialized with type: {self.source_type}")
+
+    def start_capture(self, image_queue, db):
+        """Start capturing images, either from camera or directory."""
+        self.image_queue = image_queue
+        self.running = True
+        self.db = db
+        logger.info("Capture started.")
+        if self.source_type == "camera":
+            self.capture = cv2.VideoCapture(self.camera_index)
+            if not self.capture.isOpened():
+                logger.error(f"Error: Unable to open camera with index {self.camera_index}")
+                self.running = False
+                return
+            # Create a thread for read_camera_frames
+            self.read_images_thread = threading.Thread(target=self.read_camera_frames)
+            self.read_images_thread.daemon = True
+            self.read_images_thread.start()
+        elif self.source_type == "data":
+            self.read_images_thread = threading.Thread(target=self.read_images_from_directory)
+            self.read_images_thread.daemon = True
+            self.read_images_thread.start()
+        else:
+            logger.error("Invalid source type. Please check the config.")
+            self.running = False
+
+    def stop_capture(self):
+        """Stop image capture."""
+
+        logger.info("Capture stopped.")
+        self.running = False
+        if self.source_type == "camera":
+            if hasattr(self, 'capture') and self.capture is not None:
+                self.capture.release()
+        elif self.source_type == "data":
+            if self.read_images_thread is not None:
+                self.read_images_thread.join()
+        self.image_queue = None
+        self.db = None
+
+    def read_camera_frames(self):
+        """Reads frames from the camera, saves them, and puts them in the queue with a 30-second interval, checking for uniqueness."""
+        while self.running:
+            current_time = time.time()
+            if current_time - self.last_capture_time >= self.capture_interval:
+                ret, frame = self.capture.read()
+                if not ret or frame is None:
+                    logger.warning("Failed to capture frame from camera.")
+                    time.sleep(0.1)
+                    continue
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                image_path = os.path.join(self.data_dir, f"{timestamp}.jpg")
+                cv2.imwrite(image_path, frame)
+                image_hash = self.calculate_image_hash(image_path) 
+
+                if not self.db.check_image_hash(image_hash):  
+                    try:
+                        self.image_queue.put((frame, timestamp, image_hash), block=True, timeout=1) 
+                        logger.info(f"Image added to queue: {image_path}, hash: {image_hash}") 
+                    except queue.Full:
+                        logger.warning("Queue is full. Skipping frame.")
+                    self.last_capture_time = current_time  
+                    self.db.insert_image_hash(image_hash)  
+                else:
+                    logger.info(f"Image already processed, skipping: {image_path}, hash: {image_hash}") 
+            else:
+                time.sleep(1)  
+                
+    def read_images_from_directory(self):
+        """Reads images from the directory, checks hash, and puts them in the queue."""
+
+        image_dir = self.config.image_source
+        image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        logger.info(f"Found {len(image_files)} image files in {image_dir}")
+        while self.running:
+            for image_file in image_files:
+                if not self.running:
+                    break
+                image_path = os.path.join(image_dir, image_file)
+                image_hash = self.calculate_image_hash(image_path)
+                if not self.db.check_image_hash(image_hash):
+                    logger.info(f"Reading image: {image_path}")
+                    frame = cv2.imread(image_path)
+                    if frame is None:
+                        logger.error(f"Failed to read image {image_path}")
+                        continue
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    try:
+                        self.image_queue.put((frame, timestamp, image_hash), block=True, timeout=1)
+                        logger.info(f"Image added to queue: {image_path}")
+                    except queue.Full:
+                        logger.warning("Queue is full. Skipping image.")
+                    self.db.insert_image_hash(image_hash) 
+                    time.sleep(0.1)
+                else:
+                    logger.info(f"Image already processed: {image_path}, hash: {image_hash}")
+                    continue
+            time.sleep(60)
+        logger.info("Finished reading images from directory.")
+
+    def calculate_image_hash(self, image_path):
+        """Calculate the MD5 hash of the image file."""
+
+        hasher = hashlib.md5()
+        try:
+            with open(image_path, 'rb') as image_file:
+                buf = image_file.read()
+                hasher.update(buf)
+            return hasher.hexdigest()
+        except Exception as e:
+            logger.error(f"Error calculating image hash for {image_path}: {e}")
+            return None
+
+    def read_frame(self):
+        """Reads a frame from the current source (camera or directory)."""
+
+        if self.source_type == 'camera':
+            ret, frame = self.capture.read()
+            if ret:
+                return frame, True
+            else:
+                return None, False
+        return None, False
+    
+    def get_latest_frame(self):
+        """Returns the latest frame from the active camera."""
+        if self.source_type != 'camera' or not hasattr(self, 'capture'):
+            return None, False
+        return self.capture.read()
+# file system.py
+import time
+import threading
+import queue
+from logger import logger
+from config import Config
+from database import ViolationDatabase
+from detector import ViolationDetector
+from image_src import ImageSource
+import os
+
+GEMINI_API_MODEL = os.environ.get('GEMINI_API_MODEL', 'gemini-2.0-flash') or 'gemini-2.0-flash'
+class TrafficViolationSystem:
+    def __init__(self, config: Config, image_queue: queue.Queue):
+        self.config = config
+        self.db = ViolationDatabase(config.db_path)
+        self.detector = ViolationDetector(config.gemini_api_key, config.image_dir, config.input_shape, config.prompt, GEMINI_API_MODEL)
+        self.image_source = ImageSource(config)
+        self.running = False
+        self.image_queue = image_queue
+        self.process_thread = None
+
+    def start(self):
+        if self.running:
+            logger.info("System already running.")
+            return
+        self.running = True
+        logger.info("Image capture started affirmed")
+        self.image_source.start_capture(self.image_queue, self.db)
+        logger.info("Image capture started., was here")
+        self.process_thread = threading.Thread(target=self.process_images)
+        self.process_thread.daemon = True
+        self.process_thread.start()
+        logger.info(f"Process thread started: {self.process_thread.is_alive()}") # Check if thread is alive 
+        logger.info("System started. Press Ctrl+C to stop.")
+        try:
+            while self.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Stopping system...")
+            self.stop()
+        finally:
+            self.cleanup()
+
+    def stop(self):
+        self.running = False
+        if self.process_thread:
+            self.process_thread.join()
+        self.image_source.stop_capture()
+        self.db.close()
+
+    def cleanup(self):
+        self.image_source.stop_capture()
+        self.db.close()
+
+    def process_images(self):
+        while self.running:
+            try:
+                image, timestamp, image_hash = self.image_queue.get(timeout=1)
+                if image is None:
+                    continue
+                violation_type, violations = self.detector.detect_and_notify(image, timestamp, image_hash) # detect_and_notify by email
+                if "Violation" in violation_type:
+                    for violation in violations:
+                        bbox_str = ",".join(map(str, violation['bbox']))
+                        self.db.insert_violation(timestamp,
+                                             self.detector.save_violation_image(image, timestamp),
+                                             image_hash,
+                                             violation['type'],
+                                             violation['confidence'],
+                                             bbox_str,
+                                             violation['position_description'],
+                                             )
+                        logger.info(f"Violation logged: {violation['type']}, Confidence: {violation['confidence']}, BBox: {bbox_str}, Image: {timestamp}.jpg, Hash: {image_hash}")
+                elif violation_type == "Error":
+                    logger.error(f"Error processing image at {timestamp}")
+
+                self.image_queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Error processing image: {e}")
+                self.running = False
+                break
+        logger.info("Process images thread stopped.")
+
+# file README.md
+# Python Application Setup and Running Instructions
+
+This document provides instructions on how to set up and run the Python application located in this directory.
+
+## Prerequisites
+
+* Python 3.6 or higher installed on your system.
+* `pip` (Python package installer) installed.
+* It's also helpful to have sqlite3 installed on your system, there's a high prob that you have it.
+
+## Setup
+
+1.  **Clone the Repository (if applicable):**
+
+    If you downloaded this application from a repository (e.g., GitHub), clone it to your local machine:
+
+    ```bash
+    git clone https://github.com/Jay-davisphem/Traffic-Violation-Detection-System
+    cd Traffic-Violation-Detection-System
+    ```
+
+2.  **Create a Virtual Environment (Recommended):**
+
+    It's highly recommended to create a virtual environment to isolate the application's dependencies. This prevents conflicts with other Python projects.
+
+    ```bash
+    python3 -m venv venv
+    ```
+
+    * On Windows:
+
+        ```bash
+        venv\Scripts\activate
+        ```
+
+    * On macOS and Linux:
+
+        ```bash
+        source venv/bin/activate
+        ```
+
+3.  **Install Dependencies:**
+
+    Install the required Python packages listed in `requirements.txt` using `pip`:
+
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+## Running the Application
+
+1.  **Navigate to the Application Directory:**
+
+    Ensure you are in the directory containing `main.py`.
+
+
+
+2.  **Run the Application:**
+    ##   Setting the GEMINI_API_KEY Environment Variable
+
+    The application requires the `GEMINI_API_KEY` to access the Gemini API. You **must** set this as an environment variable before running the application.
+
+    ###   Linux/macOS (Bash or Zsh)
+
+    1.  **Open your terminal.**
+    2.  **Execute the `export` command:**
+
+        ```bash
+        export GEMINI_API_KEY="YOUR_ACTUAL_API_KEY"
+        ```
+
+        * Replace `"YOUR_ACTUAL_API_KEY"` with the actual API key you obtained from Google.
+        * `export` makes the variable available to the current terminal session and any processes run from it.
+
+    3.  **Verify (Optional):**
+
+        ```bash
+        echo $GEMINI_API_KEY
+        ```
+
+        * This should print your API key to the terminal (be mindful of who can see your screen!).
+
+    ###   Windows (Command Prompt)
+
+    1.  **Open Command Prompt.**
+    2.  **Execute the `set` command:**
+
+        ```bash
+        set GEMINI_API_KEY="YOUR_ACTUAL_API_KEY"
+        ```
+
+        * Replace `"YOUR_ACTUAL_API_KEY"` with your actual API key.
+        * `set` makes the variable available for the current Command Prompt session.
+
+    3.  **Verify (Optional):**
+
+        ```bash
+        echo %GEMINI_API_KEY%
+        ```
+
+    ###   Windows (PowerShell)
+
+    1.  **Open PowerShell.**
+    2.  **Execute the `$env:` assignment:**
+
+        ```powershell
+        $env:GEMINI_API_KEY = "YOUR_ACTUAL_API_KEY"
+        ```
+
+        * Replace `"YOUR_ACTUAL_API_KEY"` with your actual API key.
+
+    3.  **Verify (Optional):**
+
+        ```powershell
+        echo $env:GEMINI_API_KEY
+        ```
+
+    ###   Important Details
+
+    * **Terminal Session Scope:** Environment variables set this way are generally only available for the *current terminal session*. If you close the terminal, you'll need to set the variable again in a new terminal.
+    * **Permanent Setting (Optional):**
+        * **Linux/macOS:** To make the variable persistent across terminal sessions, you can add the `export` command to your shell's configuration file (e.g., `~/.bashrc`, `~/.bash_profile`, or `~/.zshrc`).
+        * **Windows:** You can set permanent environment variables through the System Properties or Environment Variables settings in the Control Panel. However, for security reasons, it's often better to set them only when needed.
+    * **Security Best Practice:** Never hardcode your API key directly into your Python scripts! Environment variables are a much safer way to handle sensitive credentials.
+    * **Obtaining the API Key:** Ensure you have obtained a valid `GEMINI_API_KEY` from Google. The application will not function without it.
+
+    Execute the `main.py` script using Python:
+
+    ```bash
+    python main.py
+    ```
+
+    * If your system has both python2 and python3, and python3 is not the default, you may have to run:
+    ```bash
+    python3 main.py
+    ```
+
+# file detector.py
+import cv2
+import numpy as np
+import os
+import json
+import google.generativeai as genai
+from logger import logger
+import re
+import smtplib 
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+import os
+
+GMAIL_APP_PASS = os.environ.get('GMAIL_APP_PASS')
+GMAIL_USER = os.environ.get('GMAIL_USER', 'davidoluwafemi178@gmail.com')
+GMAIL_R_USER = os.environ.get('GMAIL_USER', 'davidoluwafemi178@gmail.com')
+
+class ViolationDetector:
+    def __init__(self, api_key, image_dir, input_shape, prompt, model):
+        self.api_key = api_key
+        self.image_dir = image_dir
+        self.input_shape = input_shape
+        genai.configure(api_key=self.api_key)
+        self.model = genai.GenerativeModel(model) # final descision is gemini-2.5-pro-exp-03-25
+        self.prompt = prompt
+        self.sender_email = GMAIL_USER
+        self.sender_password = GMAIL_APP_PASS 
+        self.recipient_email = GMAIL_R_USER
+        logger.info("ViolationDetector initialized.")
+
+    def preprocess_image(self, image):
+        try:
+            resized_image = cv2.resize(image, self.input_shape)
+            logger.debug("Image preprocessed successfully.")
+            return resized_image.astype(np.uint8)
+        except Exception as e:
+            logger.error(f"Error preprocessing image: {e}")
+            return None
+
+    def detect_violation(self, image):
+        preprocessed_image = self.preprocess_image(image)
+        if preprocessed_image is None:
+            return "Error", []
+        try:
+            _, encoded_image = cv2.imencode('.jpg', preprocessed_image)
+            image_bytes = encoded_image.tobytes()
+            image_data = {'mime_type': 'image/jpeg', 'data': image_bytes}
+            response = self.model.generate_content(
+                [self.prompt, image_data],
+                generation_config=genai.GenerationConfig()
+            )
+            if response.text is None:
+                logger.warning("Gemini API returned an empty response.")
+                return "Error", []
+            # Remove ```json and ``` from the response text
+            cleaned_response = re.sub(r'```json|```', '', response.text).strip()
+            try:
+                results = json.loads(cleaned_response)
+            except json.JSONDecodeError:
+                logger.error(f"Error decoding JSON response: {cleaned_response}")
+                return "Error", []
+            violations = results.get('violations', [])
+            logger.info(f"Detections received: {violations}")
+            if not violations:
+                return "no_violation", []
+            return "Violation", violations
+        except Exception as e:
+            logger.error(f"Error detecting violation: {e}")
+            return "Error", []
+
+    def save_violation_image(self, image, timestamp):
+        if not os.path.exists(self.image_dir):
+            os.makedirs(self.image_dir)
+        filename = f"{timestamp}.jpg"
+        image_path = os.path.join(self.image_dir, filename)
+        try:
+            cv2.imwrite(image_path, image)
+            logger.info(f"Violation image saved: {image_path}")
+            return image_path
+        except Exception as e:
+            logger.error(f"Error saving image: {e}")
+            return None
+
+    def send_violation_alert(self, recipient_email, violation_details, image_path):
+        """Sends an email alert for a detected traffic violation."""
+        subject = "Traffic Violation Alert"
+        msg = MIMEMultipart()
+        msg['From'] = self.sender_email
+        msg['To'] = recipient_email
+        msg['Subject'] = subject
+        text = f"A traffic violation has been detected:\n\n{violation_details}"
+        msg.attach(MIMEText(text, 'plain'))
+
+        # Attach the image
+        try:
+            with open(image_path, 'rb') as img_file:
+                img_data = img_file.read()
+                image = MIMEBase('image', 'jpg')
+                image.set_payload(img_data)
+                encoders.encode_base64(image)
+                image.add_header('Content-Disposition', f'attachment; filename="{os.path.basename(image_path)}"')
+                msg.attach(image)
+        except Exception as e:
+            print(f"Error attaching image: {e}")
+            logger.error(f"Error attaching image: {e}")
+
+        try:
+            server = smtplib.SMTP_SSL("smtp.gmail.com", 465)  # Use Gmail's SMTP server
+            server.login(self.sender_email, self.sender_password)
+            server.sendmail(self.sender_email, recipient_email, msg.as_string())
+            server.quit()
+            print(f"Email sent to {recipient_email}")
+            logger.info(f"Email sent to {recipient_email}")
+        except Exception as e:
+            print(f"Error sending email: {e}")
+            logger.error(f"Error sending email: {e}")
+
+    def detect_and_notify(self, image, timestamp, image_hash):
+        """Detects violations and sends email if any are found."""
+        violation_type, violations = self.detect_violation(image)
+        if "Violation" in violation_type:
+            for violation in violations:
+                bbox_str = ",".join(map(str, violation['bbox']))
+                image_path = self.save_violation_image(image, timestamp)
+                logger.info(
+                    f"Violation logged: {violation['type']}, Confidence: {violation['confidence']}, BBox: {bbox_str}, Image: {timestamp}.jpg, Hash: {image_hash}")
+                # Send email alert
+                violation_details = (
+                    f"Type: {violation['type']}\n"
+                    f"Location: {violation['position_description']}\n"
+                    f"Time: {timestamp}\n"
+                    f"Confidence: {violation['confidence']}\n"
+                    f"Bounding Box: {bbox_str}"
+                )
+                self.send_violation_alert(self.recipient_email, violation_details, image_path)
+        elif violation_type == "Error":
+            logger.error(f"Error processing image at {timestamp}")
+        return violation_type, violations 
+
+# file DOCS.md
+# **Traffic Violation Detection System Documentation**
+
+
+## **1. Project Overview**
+
+The project is an AI-powered traffic violation detection system designed to identify traffic infractions, such as running red lights and unauthorized lane changes. The system uses a Raspberry Pi, a camera module, and machine learning-based image processing. Here's a detailed breakdown:
+
+
+### **1.1 System Components:**
+
+
+
+* **Raspberry Pi:** The central processing unit, responsible for running the application and coordinating the various system components. It was chosen for its low cost, small size, and ability to handle the necessary processing tasks.
+* **Camera Module:** Captures images or video of traffic. The specific camera module was selected for its compatibility with the Raspberry Pi and its ability to provide sufficient image quality for accurate violation detection.
+* **Software:** A Python-based application that captures images, detects violations, stores logs, and generates alerts. The application is designed to be modular and extensible, allowing for future enhancements and modifications.
+
+
+### **1.2 Core Functionality:**
+
+
+
+1. **Image Capturing:** The system captures images from a camera or reads them from a directory. The image capturing process is designed to be efficient and reliable, ensuring that images are captured at a sufficient frame rate and quality.
+2. **Object Identification:** AI models analyze the images to detect traffic violations. The system employs state-of-the-art machine learning techniques to accurately identify violations, even in challenging conditions such as low light or adverse weather.
+3. **Violation Logging:** Detected violations are stored in a database. The database provides a persistent record of all detected violations, allowing for later analysis and reporting.
+4. **Alert Generation:** The system can generate alerts for detected violations, enabling further analysis or real-time responses. Alerts can be configured to be sent via email
+
+
+## **2. System Architecture**
+
+The project is divided into two main parts:
+
+
+### **2.1 Image Capturing Part**
+
+
+
+* **Description:** This part focuses on acquiring images for processing. It involves using either a camera or a directory of images as the source. The image capturing part is responsible for providing a steady stream of images to the object identification part.
+* **Code Location:** The core logic for image capturing is located in image_src.py.
+* **Key Components:**
+    * ImageSource Class:
+        * Initializes the image source (camera or directory).
+        * Manages the capture process, including starting and stopping the capture thread.
+        * Reads frames from the camera or images from a directory.
+        * Handles saving captured frames to disk, if required.
+        * Calculates image hashes to prevent processing duplicate images, ensuring that the system does not waste resources by analyzing the same image multiple times.
+        * Uses a queue (image_queue) to pass captured images to the processing part. The queue allows for asynchronous processing, where image capturing and object identification can occur concurrently.
+* **Workflow:**
+    1. The ImageSource class is initialized with a configuration that specifies the image source (camera or directory), the capture frame rate, and other relevant parameters.
+    2. The start_capture method is called, which starts a thread to continuously capture images. This thread runs in the background, allowing the main thread to focus on other tasks.
+    3. If the source is a camera, cv2.VideoCapture is used to access the camera. The read_camera_frames method reads frames from the camera, saves them with a timestamp, calculates their hash, and puts them into a queue.
+    4. If the source is a directory, the read_images_from_directory method reads each image from the directory, calculates its hash, and puts it into a queue.
+    5. The stop_capture method stops the capture process and releases the camera resource, if applicable. This ensures that the camera is properly closed when the application is terminated.
+    * The calculate_image_hash method calculates the MD5 hash of the image. This hash is used to quickly compare images and determine if they are duplicates.
+* **File: image_src.py**
+    * The ImageSource class encapsulates the image capturing logic.
+    * The read_camera_frames function reads frames from a camera, saves the images, and puts them in a queue.
+    * The read_images_from_directory function reads images from a directory and puts them in a queue.
+    * The calculate_image_hash function calculates the hash of the image to avoid processing duplicates.
+    * The start_capture and stop_capture methods control the capturing process.
+
+
+### **2.2 Object Identification Part**
+
+
+
+* **Description:** This part focuses on processing the captured images to detect traffic violations. It uses a pre-trained AI model (accessed via the Gemini API) to analyze the images. The object identification part is responsible for analyzing the images and identifying any violations.
+* **Code Location:** The core logic for object identification is located in detector.py.
+* **Key Components:**
+    * ViolationDetector Class:
+        * Initializes the AI model (Gemini).
+        * Preprocesses images for the model, including resizing and normalizing the images.
+        * Detects violations in the images using the AI model.
+        * Saves images where violations were detected, along with the violation information.
+        * Extracts relevant information about the violation (type, confidence, location) from the model's output.
+* **Workflow:**
+    1. The TrafficViolationSystem class (in system.py) retrieves images from the queue provided by the ImageSource class.
+    2. The ViolationDetector class's detect_violation method is used to analyze the image.
+    3. The preprocess_image method prepares the image for the AI model by resizing and normalizing it.
+    4. The model.generate_content method sends the image to the Gemini API for analysis.
+    5. The response from the API is parsed to extract violation information, such as the type of violation, the location of the violation in the image, and the confidence level of the detection.
+    6. The save_violation_image method saves a copy of the image with the violation information for logging and further analysis.
+    7. Violation details are then stored in the database.
+* **File: detector.py**
+    * The ViolationDetector class encapsulates the violation detection logic.
+    * The preprocess_image function prepares the image for the AI model.
+    * The detect_violation function uses the Gemini API to detect violations.
+    * The save_violation_image function saves the image in case of a violation.
+
+
+## **3. Multithreading Issues and Solutions**
+
+
+### **3.1 The Issue**
+
+The application uses multithreading to handle image capturing and processing concurrently. A key challenge in multithreaded applications is managing shared resources, such as database connections, to prevent race conditions and data corruption. Specifically, the original code faced potential issues with multiple threads trying to access the SQLite database simultaneously. SQLite, by default, has limited support for concurrent writes, which can lead to errors and performance bottlenecks.
+
+
+### **3.2 The Solution**
+
+To address this, I implemented thread-local database connections. Here's how it works:
+
+
+
+* **Thread-Local Connections:** Instead of a single, shared connection, each thread now has its own connection to the database. This is achieved using threading.local(). Thread-local storage provides a way to store data that is specific to each thread.
+* **Code Location:** The changes are primarily in the database.py file, within the ViolationDatabase class.
+* **Implementation Details:**
+    * A threading.local() object called self._local is created in the ViolationDatabase class. This object acts as a container for thread-specific data.
+    * The _get_connection() and _get_cursor() methods now check if a connection/cursor exists for the *current* thread. If not, they create a new one and store it in the thread-local storage (self._local). This ensures that each thread has its own unique connection and cursor.
+    * The close() method now closes only the connection associated with the *current* thread. This prevents one thread from accidentally closing the connection of another thread.
+* **Benefits:**
+    * **Concurrency:** Multiple threads can now safely interact with the database without interfering with each other. This significantly improves the performance and responsiveness of the application.
+    * **Reduced Errors:** This eliminates the "database is locked" errors that can occur with concurrent access.
+    * **Resource Management:** Connections are properly managed and closed on a per-thread basis, preventing resource leaks.
+
+
+### **3.3 Code Example (database.py):**
+
+```python
+import sqlite3
+import threading
+from logger import logger
+
+class ViolationDatabase:
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self._local = threading.local()  # Thread-local storage 
+        self.connect()
+        self.create_tables()
+
+    def _get_connection(self):
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            try:
+                self._local.conn = sqlite3.connect(self.db_path)
+                logger.info(f"Thread {threading.get_ident()}: Database connected.")
+            except sqlite3.Error as e:
+                logger.error(f"Thread {threading.get_ident()}: Error connecting to database: {e}")
+                raise
+        return self._local.conn
+```
+    # Similar changes in _get_cursor(), connect(), and close() \
+
+
+
+## **4. Raspberry Pi Setup and Access**
+
+
+### **4.1 Setting up Raspberry Pi for SSH Access**
+
+To remotely access and manage the Raspberry Pi, we configured it for SSH (Secure Shell) access. This allows us to control the Raspberry Pi from a computer without needing a physical keyboard, mouse, and monitor connected to the Pi. Here's a detailed outline of the process:
+
+
+
+1. **Enable SSH:**
+    * On the Raspberry Pi, open the Raspberry Pi Configuration tool (either from the desktop or the command line using sudo raspi-config).
+    * Navigate to "Interface Options" and enable SSH. This will allow the Raspberry Pi to accept incoming SSH connections.
+    * Alternatively, you can create an empty file named ssh in the /boot/ directory of the SD card before booting the Raspberry Pi. This is useful for headless setups where you don't have a monitor connected to the Pi.
+2. **Connect to the Network:**
+    * Ensure the Raspberry Pi is connected to the same network as your computer, either via Ethernet or Wi-Fi. This is essential for establishing an SSH connection.
+3. **Find the Raspberry Pi's IP Address:**
+    * There are several ways to find the IP address:
+        * Use the hostname -I command on the Raspberry Pi's terminal. This command will display the IP address(es) of the Raspberry Pi.
+        * Check your router's administration interface for a list of connected devices. Most routers provide a web interface that shows the devices connected to the network, along with their IP addresses.
+        * Use a network scanning tool on your computer, such as nmap.
+4. **Connect via SSH:**
+    * On your computer, open a terminal or SSH client (e.g., PuTTY on Windows).
+    * Use the following command, replacing &lt;ip_address> with the Raspberry Pi's IP address: \
+ssh pi@&lt;ip_address> \
+
+    * The default username is "pi," and the default password is "raspberry." **It is crucial to change the default password for security reasons.** You can do this using the passwd command on the Raspberry Pi. A strong password will help to protect your Raspberry Pi from unauthorized access.
+
+
+### **4.2 Cloning the Repository**
+
+Once you have SSH access to the Raspberry Pi, you can clone the project repository:
+
+
+
+1. **Open an SSH connection** to your Raspberry Pi.
+2. **Navigate to the desired directory** where you want to store the project (e.g., your home directory): \
+cd ~ \
+
+3. **Clone the repository** using the git clone command: \
+git clone https://github.com/Jay-davisphem/Traffic-Violation-Detection-System \
+ \
+(Replace with the actual repository URL)
+4. **Navigate into the project directory:** \
+cd Traffic-Violation-Detection-System \
+
+
+
+### **4.3 Setting up the Environment and Running the Application**
+
+Follow the instructions in the README.md file to set up the virtual environment, install the dependencies, and run the application. Remember to set the GEMINI_API_KEY environment variable as described in the README.md. This API key is required to access the Gemini AI model for object identification.
+
+# file main.py
+from logger import logger
+from config import Config
+from system import TrafficViolationSystem
+import queue
+
+if __name__ == "__main__":
+    logger.info("Main script started.")  # 
+    try:
+        config = Config()
+        logger.info(f"Config loaded. image_source: {config.image_source}")  # 
+        image_queue = queue.Queue(maxsize=1000)  # Create a queue
+        logger.info("Queue created.")  # 
+        system = TrafficViolationSystem(config, image_queue)
+        logger.info("TrafficViolationSystem initialized.")  # 
+        system.start()
+        logger.info("System started.")  # 
+    except Exception as e:
+        logger.error(f"Exception in main: {e}")  # 
+# file models.py
+from pydantic import BaseModel
+
+class Violation(BaseModel):
+    type: str
+    bbox: list[int]
+    position_description: str
+    confidence: float
+
+class ViolationResponse(BaseModel):
+    violations: list[Violation]
+
+# file config.py
+import os
+from logger import logger
+
+class Config:
+    def __init__(self):
+        self.image_source = "camera"
+        self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        self.violation_threshold = 0.5
+        self.image_dir = "violations"
+        self.db_path = "violations.db"
+        self.camera_index = 0
+        self.input_shape = (256, 256)
+        self.prompt = """
+            You are given an image from a traffic surveillance system.
+
+            Your task is to:
+            1. Detect any traffic violations present in the image.
+            2. Identify the type of violation.
+            3. Return bounding box coordinates for each violating vehicle in the format [x1, y1, x2, y2].
+            4. Include a **very detailed visual description** of where each violating vehicle is located within the image.
+            5. Provide a confidence score (0.0 to 1.0) for each violation.
+            6. See if you extract details of tracking the drivers, put is as metadata object
+
+            Possible traffic violation types include (but are not limited to):
+            - "red_light": Vehicle crossing an intersection while the traffic light is red.
+            - "wrong_way": Vehicle driving in the opposite direction of the lane or road.
+            - "unauthorized_lane_change": Vehicle switching lanes illegally (e.g., solid line crossing).
+            - "speeding": Vehicle moving faster than the posted speed limit.
+            - "clearway_violation": Vehicle parked or stopped in a designated clearway zone.
+            - "no_parking_zone": Vehicle parked in an area marked as no parking.
+            - "stop_sign_violation": Vehicle failing to stop at a stop sign.
+            - "pedestrian_crossing_violation": Vehicle encroaching on or not yielding to a pedestrian crossing.
+            - "illegal_turn": Vehicle making a prohibited U-turn or turning where it’s not allowed.
+            - "lane_straddling": Vehicle positioned across multiple lanes improperly.
+            - "bus_lane_violation": Unauthorized vehicle driving in a bus-only lane.
+            - and other ones
+            If **no violation** is detected, return `"violations": []`.
+
+            Respond strictly in a valid JSON format as shown below:
+
+            {
+                "violations": [
+                    {
+                        "type": "violation_type",
+                        "bbox": [x1, y1, x2, y2],
+                        "position_description": "very detailed description of where the vehicle is located in the image",
+                        "confidence": float (e.g., 0.92),
+                        "metadata": {}
+                    },
+                    ...
+                ]
+            }
+
+            ### Example 1 (single violation):
+            {
+                "violations": [
+                    {
+                        "type": "red_light",
+                        "bbox": [100, 200, 300, 400],
+                        "position_description": "The red car is in the middle of the intersection, clearly beyond the white stop line under an active red light",
+                        "confidence": 0.95,
+                        "metadata": {}
+                    }
+                ]
+            }
+
+            ### Example 2 (multiple violations):
+            {
+                "violations": [
+                    {
+                        "type": "wrong_way",
+                        "bbox": [50, 100, 150, 200],
+                        "position_description": "A black SUV is traveling in the wrong direction on a one-way street marked by white arrows pointing the opposite way",
+                        "confidence": 0.88,
+                        "metadata": {},
+                    },
+                    {
+                        "type": "speeding",
+                        "bbox": [250, 300, 350, 400],
+                        "position_description": "A silver sedan in the left lane appears blurred and ahead of other vehicles, suggesting high speed in a clearly marked 40 km/h zone",
+                        "confidence": 0.78,
+                        "metadata": {},
+                    }
+                ]
+            }
+
+            ### Example 3 (no violations):
+            {
+                "violations": []
+            }
+            """
+
+            
+        logger.info(f"Config initialized with image_source: {self.image_source}")
+# file app.py
+from logger import logger
+import os
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, FileResponse, Response
+import sqlite3  # Import sqlite3
+import time
+
+
+app = FastAPI()
+templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+app.mount("/violations", StaticFiles(directory="violations"), name="violations")
+
+
+# --- Database Connection ---
+def get_db_connection():
+    try:
+        conn = sqlite3.connect("violations.db", check_same_thread=False)  # Replace with your actual db_path
+        return conn
+    except sqlite3.Error as e:
+        logger  .error(f"Database connection error: {e}")
+        return None
+
+
+# --- Latest Frame Retrieval ---
+def get_latest_camera_frame_path():
+    """Gets the path to the latest image saved in the camera_data directory (assuming sorted by filename)."""
+    camera_data_dir = "camera_data"
+    if not os.path.exists(camera_data_dir):
+        return None
+    image_files = [f for f in os.listdir(camera_data_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    if not image_files:
+        return None
+    if image_files:
+        image_files.sort()
+        latest_path = os.path.join(camera_data_dir, image_files[-1])
+        logger.info(f"Latest camera frame path: {latest_path}")  # Add this line
+        return latest_path
+    else:
+        return None
+
+
+# --- FastAPI Routes ---
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM violations")
+        violations = cursor.fetchall()
+        conn.close()
+    else:
+        violations = []  # Or handle the error appropriately
+
+
+    latest_camera_frame_path = get_latest_camera_frame_path()
+    return templates.TemplateResponse("index.html", {"request": request, "violations": violations, "latest_camera_frame_path": latest_camera_frame_path})
+
+@app.get('/api/violations')
+def get_violations():
+    conn = get_db_connection()
+    violations = []
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM violations")
+            violations = cursor.fetchall()
+        finally:
+            conn.close()
+    else:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    return violations
+@app.get("/latest_camera_frame")
+async def get_camera_frame():
+    latest_camera_frame_path = get_latest_camera_frame_path()
+    if latest_camera_frame_path:
+        return FileResponse(latest_camera_frame_path, media_type="image/jpeg")
+    else:
+        return Response(content=b'', media_type="image/jpeg")  # Or a placeholder
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+# file tests.py
+import google.generativeai as genai
+import cv2
+import os
+
+def identify_image(api_key, image_path):
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.5-pro-exp-03-25')
+    
+    if not os.path.exists(image_path):
+        print(f"Error: Image not found at {image_path}")
+        return None
+
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"Error: Could not read image at {image_path}")
+        return None
+
+    _, encoded_image = cv2.imencode('.jpg', image)
+    image_bytes = encoded_image.tobytes()
+
+    prompt = """
+            Detect traffic violations in the image.  Identify the type of violation,
+            and provide bounding box coordinates (x1, y1, x2, y2) for the violating vehicle.
+            Possible violation types are: "wrong_way", "clearway", "red_light", "speeding", "lane_change".
+            If no violation is detected, return "no_violation".
+            
+            Respond with a JSON object.  The JSON object should have the following structure:
+            
+            {
+                "violations": [
+                    {
+                        "type": "violation_type",
+                        "bbox": [x1, y1, x2, y2],
+                        "position_description": "very detailed description of where visually",
+                        "confidence": confidence_score
+                    },
+                    ... // more violations if any
+                ]
+            }
+            
+            Example 1:
+            {
+                "violations": [
+                    {
+                        "type": "red_light",
+                        "bbox": [100, 200, 300, 400],
+                        "position_description": "",
+                        "confidence": 0.95
+                    }
+                ]
+            }
+            
+            Example 2:
+            {
+                "violations": [
+                    {
+                        "type": "wrong_way",
+                        "bbox": [50, 100, 150, 200],
+                        "position_description": "",
+                        "confidence": 0.88
+                    },
+                    {
+                        "type": "speeding",
+                        "bbox": [250, 300, 350, 400],
+                        "position_description": "",
+                        "confidence": 0.75
+                    }
+                ]
+            }
+            
+            Example 3:
+            {
+                "violations": []
+            }
+            """
+
+    image_data = {
+        'mime_type': 'image/jpeg',
+        'data': image_bytes
+    }
+
+    try:
+        response = model.generate_content([prompt, image_data])
+        if response.text:
+            return response.text
+        else:
+            print("Gemini API returned an empty response.")
+            return None
+    except Exception as e:
+        print(f"Error during image identification: {e}")
+        return None
+
+if __name__ == "__main__":
+    api_key = os.environ.get('GEMINI_API_KEY')
+    image_path = 'data/image3.png'  
+
+    result = identify_image(api_key, image_path)
+    if result:
+        print(f"Objects identified in the image:\n{result}")
+    else:
+        print("Failed to identify objects in the image.")
+
+
+# file logger.py
+import logging
+import os
+from datetime import datetime
+
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+
+log_file = os.path.join(log_dir, f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger("TrafficSystemLogger")
+

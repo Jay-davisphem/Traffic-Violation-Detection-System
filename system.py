@@ -8,7 +8,7 @@ from detector import ViolationDetector
 from image_src import ImageSource
 import os
 
-GEMINI_API_MODEL = os.environ.get('GEMINI_API_MODEL', 'gemini-2.0-flash') or 'gemini-2.0-flash'
+GEMINI_API_MODEL = os.environ.get('GEMINI_API_MODEL', 'gemini-2.0-flash') or 'gemini-2.0-flash' # gemini-2.5-flash-preview-04-17
 class TrafficViolationSystem:
     def __init__(self, config: Config, image_queue: queue.Queue):
         self.config = config
